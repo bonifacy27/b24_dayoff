@@ -37,9 +37,10 @@ if (!$USER->IsAuthorized()) {
 $IBLOCK_ID      = 398; // инфоблок заявок на отгул
 $GROUP_ID       = 87;  // группа из URL
 $IBLOCK_STATUS  = 388; // инфоблок справочника статусов заявок
-$STATUS_CANCELLED_ID = 3511824; // элемент статуса "Отменена"
-$STATUS_COMPLETED_ID = 3511775; // элемент статуса "Выполнена"
-$PROP_HOURS_ID  = 3120; // свойство "Часы отгула" в заявке
+$STATUS_COMPLETED_ID = 3511824; // элемент статуса "Выполнена"
+$STATUS_CANCELLED_ID = 3511775; // элемент статуса "Отменена"
+$PROP_EMPLOYEE = 'SOTRUDNIK';
+$PROP_STATUS = 'STATUS';
 
 /**
  * Карта свойств заявок на отгул
@@ -215,72 +216,28 @@ function formatHistoryHtml($historyRaw)
     return $html;
 }
 
-function parseHoursValue($value)
-{
-    if (is_array($value)) {
-        $value = reset($value);
-    }
-
-    $value = trim((string)$value);
-    if ($value === '') {
-        return 0.0;
-    }
-
-    $value = str_replace(',', '.', $value);
-    return is_numeric($value) ? (float)$value : 0.0;
-}
-
-function normalizeStatusId($value)
-{
-    if (is_array($value)) {
-        $value = reset($value);
-    }
-
-    $value = trim((string)$value);
-    if ($value === '') {
-        return 0;
-    }
-
-    if (strpos($value, ',') !== false) {
-        $parts = explode(',', $value);
-        $value = trim((string)$parts[0]);
-    }
-
-    return (int)$value;
-}
-
-function getPendingRequestedHours($userId, $iblockId, $statusPropId, $hoursPropId, array $excludedStatusIds)
+function getPendingRequestedHours($userId, $iblockId, $employeePropCode, $statusPropCode, array $excludedStatusIds)
 {
     $userId = (int)$userId;
     if ($userId <= 0) {
         return 0.0;
     }
 
+    $filter = [
+        'IBLOCK_ID' => (int)$iblockId,
+        'ACTIVE' => 'Y',
+        'PROPERTY_' . (string)$employeePropCode => $userId,
+    ];
+
+    if (!empty($excludedStatusIds)) {
+        $filter['!PROPERTY_' . (string)$statusPropCode] = array_map('intval', $excludedStatusIds);
+    }
+
     $sumHours = 0.0;
 
-    $res = CIBlockElement::GetList(
-        ["ID" => "DESC"],
-        [
-            "IBLOCK_ID" => (int)$iblockId,
-            "ACTIVE" => "Y",
-            "PROPERTY_3119" => $userId,
-        ],
-        false,
-        false,
-        ["ID"]
-    );
-
-    while ($ob = $res->GetNextElement()) {
-        $f = $ob->GetFields();
-        $p = $ob->GetProperties();
-
-        $statusId = normalizeStatusId(propValueSafe($p, (int)$iblockId, (int)$f['ID'], (int)$statusPropId, 'STATUS'));
-        if (in_array($statusId, $excludedStatusIds, true)) {
-            continue;
-        }
-
-        $hoursRaw = propValueSafe($p, (int)$iblockId, (int)$f['ID'], (int)$hoursPropId, 'CHASY');
-        $sumHours += parseHoursValue($hoursRaw);
+    $res = CIBlockElement::GetList(['ID' => 'ASC'], $filter, false, false, ['ID']);
+    while ($res->Fetch()) {
+        $sumHours += 8.0;
     }
 
     return $sumHours;
@@ -293,8 +250,8 @@ $currentBalanceHours = userBalanceById($currentUserId);
 $pendingRequestedHours = getPendingRequestedHours(
     $currentUserId,
     $IBLOCK_ID,
-    3123,
-    $PROP_HOURS_ID,
+    $PROP_EMPLOYEE,
+    $PROP_STATUS,
     [(int)$STATUS_CANCELLED_ID, (int)$STATUS_COMPLETED_ID]
 );
 $availableBalanceHours = max(0, $currentBalanceHours - $pendingRequestedHours);
