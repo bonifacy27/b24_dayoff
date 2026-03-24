@@ -36,7 +36,11 @@ if (!$USER->IsAuthorized()) {
  */
 $IBLOCK_ID      = 398; // инфоблок заявок на отгул
 $GROUP_ID       = 87;  // группа из URL
-$IBLOCK_STATUS  = 399; // !!! УКАЖИТЕ ID справочника статусов, если статусы лежат в отдельном инфоблоке
+$IBLOCK_STATUS  = 388; // инфоблок справочника статусов заявок
+$STATUS_COMPLETED_ID = 3511824; // элемент статуса "Выполнена"
+$STATUS_CANCELLED_ID = 3511775; // элемент статуса "Отменена"
+$PROP_EMPLOYEE = 'SOTRUDNIK';
+$PROP_STATUS = 'STATUS';
 
 /**
  * Карта свойств заявок на отгул
@@ -127,11 +131,11 @@ function statusInfoById($statusId, $iblockStatus)
         ],
         false,
         false,
-        ["ID", "NAME", "PROPERTY_COLOR"]
+        ["ID", "NAME", "PROPERTY_3059"]
     );
 
     if ($ar = $res->Fetch()) {
-        $color = $ar["PROPERTY_COLOR_VALUE"] ?: "#17a2b8";
+        $color = $ar["PROPERTY_3059_VALUE"] ?: "#17a2b8";
         return $cache[$statusId] = [
             "NAME"  => $ar["NAME"],
             "COLOR" => $color,
@@ -212,12 +216,47 @@ function formatHistoryHtml($historyRaw)
     return $html;
 }
 
+function getPendingRequestedHours($userId, $iblockId, $employeePropCode, $statusPropCode, array $excludedStatusIds)
+{
+    $userId = (int)$userId;
+    if ($userId <= 0) {
+        return 0.0;
+    }
+
+    $filter = [
+        'IBLOCK_ID' => (int)$iblockId,
+        'ACTIVE' => 'Y',
+        'PROPERTY_' . (string)$employeePropCode => $userId,
+    ];
+
+    if (!empty($excludedStatusIds)) {
+        $filter['!PROPERTY_' . (string)$statusPropCode] = array_map('intval', $excludedStatusIds);
+    }
+
+    $sumHours = 0.0;
+
+    $res = CIBlockElement::GetList(['ID' => 'ASC'], $filter, false, false, ['ID']);
+    while ($res->Fetch()) {
+        $sumHours += 8.0;
+    }
+
+    return $sumHours;
+}
+
 /* ------------------------- текущий пользователь ------------------------- */
 
 $currentUserId = (int)$USER->GetID();
 $currentBalanceHours = userBalanceById($currentUserId);
-$currentBalanceHoursInt = (int)floor($currentBalanceHours);
-$currentBalanceDays = (int)floor($currentBalanceHours / 8);
+$pendingRequestedHours = getPendingRequestedHours(
+    $currentUserId,
+    $IBLOCK_ID,
+    $PROP_EMPLOYEE,
+    $PROP_STATUS,
+    [(int)$STATUS_CANCELLED_ID, (int)$STATUS_COMPLETED_ID]
+);
+$availableBalanceHours = max(0, $currentBalanceHours - $pendingRequestedHours);
+$currentBalanceHoursInt = (float)$availableBalanceHours;
+$currentBalanceDays = (int)floor($availableBalanceHours / 8);
 
 /* ------------------------- сортировка ------------------------- */
 
@@ -302,35 +341,38 @@ $rsItems = CIBlockElement::GetList(
   .search-box {
     flex: 1 1 520px;
   }
+  .page-actions {
+    margin-bottom: 16px;
+  }
   .balance-box {
-    flex: 0 0 360px;
-    background: linear-gradient(135deg, #17a2b8 0%, #0d6efd 100%);
-    color: #fff;
-    border-radius: 12px;
-    padding: 18px 20px;
-    box-shadow: 0 8px 24px rgba(0,0,0,.15);
+    flex: 0 0 280px;
+    background: #fff;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 12px 14px;
   }
   .balance-box-title {
-    font-size: 15px;
-    font-weight: 700;
-    margin-bottom: 8px;
-    opacity: .95;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: #6c757d;
   }
   .balance-box-hours {
-    font-size: 30px;
-    font-weight: 800;
-    line-height: 1.1;
-    margin-bottom: 8px;
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 4px;
+    color: #212529;
   }
   .balance-box-days {
-    font-size: 18px;
+    font-size: 14px;
     font-weight: 600;
-    margin-bottom: 8px;
+    margin-bottom: 2px;
+    color: #495057;
   }
   .balance-box-note {
     font-size: 13px;
-    opacity: .9;
-    line-height: 1.4;
+    color: #495057;
   }
 
   .table thead th { white-space: nowrap; }
@@ -421,6 +463,9 @@ $rsItems = CIBlockElement::GetList(
 <div class="container-fluid page-wrap">
   <h2 class="mb-2">Заявки на отгул</h2>
   <p class="mb-3">Список заявок на отгул с поиском по сотруднику и просмотром истории статусов.</p>
+  <div class="page-actions">
+    <a href="create_request.php" class="btn btn-success">Создать заявку на отгул</a>
+  </div>
 
   <div class="top-panel">
     <div class="search-box">
@@ -444,12 +489,9 @@ $rsItems = CIBlockElement::GetList(
 
     <div class="balance-box">
       <div class="balance-box-title">Текущий баланс отгула</div>
-      <div class="balance-box-hours"><?= $currentBalanceHoursInt ?> ч.</div>
+      <div class="balance-box-hours"><?= rtrim(rtrim(number_format($currentBalanceHoursInt, 1, '.', ''), '0'), '.') ?> ч.</div>
       <div class="balance-box-days">Доступно дней: <?= $currentBalanceDays ?></div>
-      <div class="balance-box-note">
-        Отгулы используются по 8 часов.<br>
-        Количество доступных дней рассчитывается как целая часть от деления часов на 8.
-      </div>
+      <div class="balance-box-note">На согласовании: <?= rtrim(rtrim(number_format($pendingRequestedHours, 1, '.', ''), '0'), '.') ?> ч.</div>
     </div>
   </div>
 
