@@ -36,7 +36,10 @@ if (!$USER->IsAuthorized()) {
  */
 $IBLOCK_ID      = 398; // инфоблок заявок на отгул
 $GROUP_ID       = 87;  // группа из URL
-$IBLOCK_STATUS  = 399; // !!! УКАЖИТЕ ID справочника статусов, если статусы лежат в отдельном инфоблоке
+$IBLOCK_STATUS  = 388; // инфоблок справочника статусов заявок
+$STATUS_CANCELLED_ID = 3511824; // элемент статуса "Отменена"
+$STATUS_COMPLETED_ID = 3511775; // элемент статуса "Выполнена"
+$PROP_HOURS_ID  = 3120; // свойство "Часы отгула" в заявке
 
 /**
  * Карта свойств заявок на отгул
@@ -127,11 +130,11 @@ function statusInfoById($statusId, $iblockStatus)
         ],
         false,
         false,
-        ["ID", "NAME", "PROPERTY_COLOR"]
+        ["ID", "NAME", "PROPERTY_3059"]
     );
 
     if ($ar = $res->Fetch()) {
-        $color = $ar["PROPERTY_COLOR_VALUE"] ?: "#17a2b8";
+        $color = $ar["PROPERTY_3059_VALUE"] ?: "#17a2b8";
         return $cache[$statusId] = [
             "NAME"  => $ar["NAME"],
             "COLOR" => $color,
@@ -212,12 +215,72 @@ function formatHistoryHtml($historyRaw)
     return $html;
 }
 
+function parseHoursValue($value)
+{
+    if (is_array($value)) {
+        $value = reset($value);
+    }
+
+    $value = trim((string)$value);
+    if ($value === '') {
+        return 0.0;
+    }
+
+    $value = str_replace(',', '.', $value);
+    return is_numeric($value) ? (float)$value : 0.0;
+}
+
+function getPendingRequestedHours($userId, $iblockId, $statusPropId, $hoursPropId, array $excludedStatusIds)
+{
+    $userId = (int)$userId;
+    if ($userId <= 0) {
+        return 0.0;
+    }
+
+    $sumHours = 0.0;
+
+    $res = CIBlockElement::GetList(
+        ["ID" => "DESC"],
+        [
+            "IBLOCK_ID" => (int)$iblockId,
+            "ACTIVE" => "Y",
+            "PROPERTY_3119" => $userId,
+        ],
+        false,
+        false,
+        ["ID"]
+    );
+
+    while ($ob = $res->GetNextElement()) {
+        $f = $ob->GetFields();
+        $p = $ob->GetProperties();
+
+        $statusId = (int)propValueSafe($p, (int)$iblockId, (int)$f['ID'], (int)$statusPropId, 'STATUS');
+        if (in_array($statusId, $excludedStatusIds, true)) {
+            continue;
+        }
+
+        $hoursRaw = propValueSafe($p, (int)$iblockId, (int)$f['ID'], (int)$hoursPropId, 'CHASY');
+        $sumHours += parseHoursValue($hoursRaw);
+    }
+
+    return $sumHours;
+}
+
 /* ------------------------- текущий пользователь ------------------------- */
 
 $currentUserId = (int)$USER->GetID();
 $currentBalanceHours = userBalanceById($currentUserId);
-$currentBalanceHoursInt = (int)floor($currentBalanceHours);
-$currentBalanceDays = (int)floor($currentBalanceHours / 8);
+$pendingRequestedHours = getPendingRequestedHours(
+    $currentUserId,
+    $IBLOCK_ID,
+    3123,
+    $PROP_HOURS_ID,
+    [(int)$STATUS_CANCELLED_ID, (int)$STATUS_COMPLETED_ID]
+);
+$availableBalanceHours = max(0, $currentBalanceHours - $pendingRequestedHours);
+$currentBalanceHoursInt = (int)floor($availableBalanceHours);
+$currentBalanceDays = (int)floor($availableBalanceHours / 8);
 
 /* ------------------------- сортировка ------------------------- */
 
@@ -453,6 +516,7 @@ $rsItems = CIBlockElement::GetList(
       <div class="balance-box-hours"><?= $currentBalanceHoursInt ?> ч.</div>
       <div class="balance-box-days">Доступно дней: <?= $currentBalanceDays ?></div>
       <div class="balance-box-note">
+        Уже запрошено (на согласовании): <?= (int)floor($pendingRequestedHours) ?> ч.<br>
         Отгулы используются по 8 часов.<br>
         Количество доступных дней рассчитывается как целая часть от деления часов на 8.
       </div>
