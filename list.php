@@ -230,6 +230,25 @@ function parseHoursValue($value)
     return is_numeric($value) ? (float)$value : 0.0;
 }
 
+function normalizeStatusId($value)
+{
+    if (is_array($value)) {
+        $value = reset($value);
+    }
+
+    $value = trim((string)$value);
+    if ($value === '') {
+        return 0;
+    }
+
+    if (strpos($value, ',') !== false) {
+        $parts = explode(',', $value);
+        $value = trim((string)$parts[0]);
+    }
+
+    return (int)$value;
+}
+
 function getPendingRequestedHours($userId, $iblockId, $statusPropId, $hoursPropId, array $excludedStatusIds)
 {
     $userId = (int)$userId;
@@ -255,13 +274,20 @@ function getPendingRequestedHours($userId, $iblockId, $statusPropId, $hoursPropI
         $f = $ob->GetFields();
         $p = $ob->GetProperties();
 
-        $statusId = (int)propValueSafe($p, (int)$iblockId, (int)$f['ID'], (int)$statusPropId, 'STATUS');
+        $statusId = normalizeStatusId(propValueSafe($p, (int)$iblockId, (int)$f['ID'], (int)$statusPropId, 'STATUS'));
         if (in_array($statusId, $excludedStatusIds, true)) {
             continue;
         }
 
         $hoursRaw = propValueSafe($p, (int)$iblockId, (int)$f['ID'], (int)$hoursPropId, 'CHASY');
-        $sumHours += parseHoursValue($hoursRaw);
+        $hours = parseHoursValue($hoursRaw);
+
+        // Если часы не заполнены в заявке, считаем стандартный отгул как 8 часов.
+        if ($hours <= 0) {
+            $hours = 8.0;
+        }
+
+        $sumHours += $hours;
     }
 
     return $sumHours;
@@ -279,7 +305,7 @@ $pendingRequestedHours = getPendingRequestedHours(
     [(int)$STATUS_CANCELLED_ID, (int)$STATUS_COMPLETED_ID]
 );
 $availableBalanceHours = max(0, $currentBalanceHours - $pendingRequestedHours);
-$currentBalanceHoursInt = (int)floor($availableBalanceHours);
+$currentBalanceHoursInt = (float)$availableBalanceHours;
 $currentBalanceDays = (int)floor($availableBalanceHours / 8);
 
 /* ------------------------- сортировка ------------------------- */
@@ -369,34 +395,34 @@ $rsItems = CIBlockElement::GetList(
     margin-bottom: 16px;
   }
   .balance-box {
-    flex: 0 0 360px;
-    background: linear-gradient(135deg, #17a2b8 0%, #0d6efd 100%);
-    color: #fff;
-    border-radius: 12px;
-    padding: 18px 20px;
-    box-shadow: 0 8px 24px rgba(0,0,0,.15);
+    flex: 0 0 280px;
+    background: #fff;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 12px 14px;
   }
   .balance-box-title {
-    font-size: 15px;
-    font-weight: 700;
-    margin-bottom: 8px;
-    opacity: .95;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: #6c757d;
   }
   .balance-box-hours {
-    font-size: 30px;
-    font-weight: 800;
-    line-height: 1.1;
-    margin-bottom: 8px;
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: 4px;
+    color: #212529;
   }
   .balance-box-days {
-    font-size: 18px;
+    font-size: 14px;
     font-weight: 600;
-    margin-bottom: 8px;
+    margin-bottom: 2px;
+    color: #495057;
   }
   .balance-box-note {
     font-size: 13px;
-    opacity: .9;
-    line-height: 1.4;
+    color: #495057;
   }
 
   .table thead th { white-space: nowrap; }
@@ -513,13 +539,9 @@ $rsItems = CIBlockElement::GetList(
 
     <div class="balance-box">
       <div class="balance-box-title">Текущий баланс отгула</div>
-      <div class="balance-box-hours"><?= $currentBalanceHoursInt ?> ч.</div>
+      <div class="balance-box-hours"><?= rtrim(rtrim(number_format($currentBalanceHoursInt, 1, '.', ''), '0'), '.') ?> ч.</div>
       <div class="balance-box-days">Доступно дней: <?= $currentBalanceDays ?></div>
-      <div class="balance-box-note">
-        Уже запрошено (на согласовании): <?= (int)floor($pendingRequestedHours) ?> ч.<br>
-        Отгулы используются по 8 часов.<br>
-        Количество доступных дней рассчитывается как целая часть от деления часов на 8.
-      </div>
+      <div class="balance-box-note">На согласовании: <?= rtrim(rtrim(number_format($pendingRequestedHours, 1, '.', ''), '0'), '.') ?> ч.</div>
     </div>
   </div>
 
