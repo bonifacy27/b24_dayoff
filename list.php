@@ -302,6 +302,9 @@ $rsItems = CIBlockElement::GetList(
   .search-box {
     flex: 1 1 520px;
   }
+  .page-actions {
+    margin-bottom: 16px;
+  }
   .balance-box {
     flex: 0 0 360px;
     background: linear-gradient(135deg, #17a2b8 0%, #0d6efd 100%);
@@ -421,6 +424,9 @@ $rsItems = CIBlockElement::GetList(
 <div class="container-fluid page-wrap">
   <h2 class="mb-2">Заявки на отгул</h2>
   <p class="mb-3">Список заявок на отгул с поиском по сотруднику и просмотром истории статусов.</p>
+  <div class="page-actions">
+    <a href="create_request.php" class="btn btn-success">Создать заявку на отгул</a>
+  </div>
 
   <div class="top-panel">
     <div class="search-box">
