@@ -1,121 +1,240 @@
 <?php
 /**
- * Заявка на сверхурочную работу / работу в выходной день / дежурство
- * Версия: 1.7.2
+ * /forms/hr_administration/dayoff/create_request.php
+ * Создание заявки на отгул.
+ * Версия: v2.0.0 (2026-03-24)
  */
 
 use Bitrix\Main\Loader;
-use Bitrix\Main\Context;
-use Bitrix\Main\Web\Json;
 
 require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
+require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/header.php';
 
-if (
-    !Loader::includeModule('iblock')
-    || !Loader::includeModule('main')
-    || !Loader::includeModule('ui')
-    || !Loader::includeModule('intranet')
-) {
-    if (isset($_REQUEST['ajax_action'])) {
-        header('Content-Type: application/json; charset=' . LANG_CHARSET);
-        echo Json::encode([
-            'success' => false,
-            'errors' => ['Не удалось подключить модули iblock/main/ui/intranet'],
-        ]);
-        die();
-    }
+$APPLICATION->SetTitle('Создание заявки на отгул');
 
-    require($_SERVER['DOCUMENT_ROOT'] . '/bitrix/header.php');
-    ShowError('Не удалось подключить модули iblock/main/ui/intranet');
-    require($_SERVER['DOCUMENT_ROOT'] . '/bitrix/footer.php');
+if (!Loader::includeModule('iblock') || !Loader::includeModule('bizproc')) {
+    ShowError('Не удалось подключить модули iblock/bizproc');
+    require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/footer.php';
     return;
 }
 
-require_once __DIR__ . '/inc/constants.php';
-require_once __DIR__ . '/inc/data.php';
-require_once __DIR__ . '/inc/logic.php';
-
-$request = Context::getCurrent()->getRequest();
-
 global $USER;
-$currentUserId = (is_object($USER) && method_exists($USER, 'GetID')) ? (int)$USER->GetID() : 0;
 
-$debugQueryValue = mb_strtolower(trim((string)$request->getQuery('debug')));
-if (in_array($debugQueryValue, ['1', 'y', 'yes', 'true'], true)) {
-    $overtimeConfig['DEBUG'] = true;
+if (!$USER->IsAuthorized()) {
+    ShowError('Требуется авторизация');
+    require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/footer.php';
+    return;
 }
 
-$overtimeConfig['ALLOW_DUTY'] = overtimeCanCurrentUserUseDuty($currentUserId, $overtimeConfig);
+$IBLOCK_DAYOFF_REQUESTS = 398;
+$BP_TEMPLATE_ID = 1311;
 
-/**
- * AJAX: предпросмотр
- */
-if ($request->isPost() && $request->getPost('ajax_action') === 'preview') {
-    header('Content-Type: application/json; charset=' . LANG_CHARSET);
+$STATUS_COMPLETED_ID = 3511824;
+$STATUS_CANCELLED_ID = 3511775;
 
-    if (!check_bitrix_sessid()) {
-        echo Json::encode([
-            'success' => false,
-            'errors' => ['Сессия истекла. Обновите страницу.'],
-        ]);
-        die();
-    }
+$PROP_EMPLOYEE = 'SOTRUDNIK';
+$PROP_DAYOFF_DATE = 'DATE_DAYOFF';
+$PROP_COMMENTS = 'COMMENTS';
+$PROP_STATUS = 'STATUS';
 
-    try {
-        $mode = trim((string)$request->getPost('mode'));
-        $payloadJson = (string)$request->getPost('payload');
-        $payload = Json::decode($payloadJson);
-
-        $result = overtimeBuildModePreview(
-            $mode,
-            is_array($payload) ? $payload : [],
-            $overtimeConfig
-        );
-
-        echo Json::encode($result);
-    } catch (Throwable $e) {
-        echo Json::encode([
-            'success' => false,
-            'errors' => ['Ошибка предпросмотра: ' . $e->getMessage()],
-        ]);
-    }
-
-    die();
+function h($value): string
+{
+    return htmlspecialcharsbx((string)$value);
 }
 
-require($_SERVER['DOCUMENT_ROOT'] . '/bitrix/header.php');
-$APPLICATION->SetTitle('Заявка на сверхурочную работу / работу в выходной день / дежурство');
+function dayoffGetUserData(int $userId): array
+{
+    $result = [
+        'id' => $userId,
+        'full_name' => '',
+        'position' => '',
+        'balance_hours' => 0.0,
+    ];
 
-$createResult = null;
+    if ($userId <= 0) {
+        return $result;
+    }
 
-if (
-    $request->isPost()
-    && $request->getPost('action') === 'create'
-    && $request->getPost('confirm_create') === 'Y'
-    && check_bitrix_sessid()
-) {
-    $mode = trim((string)$request->getPost('mode'));
+    $rsUser = CUser::GetByID($userId);
+    if ($arUser = $rsUser->Fetch()) {
+        $result['full_name'] = trim(($arUser['LAST_NAME'] ?? '') . ' ' . ($arUser['NAME'] ?? '') . ' ' . ($arUser['SECOND_NAME'] ?? ''));
+        $result['position'] = trim((string)($arUser['WORK_POSITION'] ?? ''));
+        $result['balance_hours'] = (float)str_replace(',', '.', (string)($arUser['UF_DAYOFF_BALANCE'] ?? 0));
+    }
 
-    $createResult = overtimeCreateByMode(
-        $mode,
-        $_POST,
-        $_FILES,
-        $currentUserId,
-        $overtimeConfig
+    return $result;
+}
+
+function dayoffGetPendingHours(int $userId, int $iblockId, string $employeeProp, string $statusProp, array $excludedStatuses): float
+{
+    if ($userId <= 0 || $iblockId <= 0) {
+        return 0.0;
+    }
+
+    $filter = [
+        'IBLOCK_ID' => $iblockId,
+        'ACTIVE' => 'Y',
+        'PROPERTY_' . $employeeProp => $userId,
+    ];
+
+    if (!empty($excludedStatuses)) {
+        $filter['!PROPERTY_' . $statusProp] = $excludedStatuses;
+    }
+
+    $res = CIBlockElement::GetList(
+        ['ID' => 'ASC'],
+        $filter,
+        false,
+        false,
+        ['ID']
     );
 
-    if (!empty($createResult['success'])) {
-        LocalRedirect('/forms/hr_administration/overtime/list.php');
+    $count = 0;
+    while ($res->Fetch()) {
+        $count++;
+    }
+
+    return (float)($count * 8);
+}
+
+$currentUserId = (int)$USER->GetID();
+$currentUser = dayoffGetUserData($currentUserId);
+
+$balanceHoursRaw = max(0.0, (float)$currentUser['balance_hours']);
+$pendingHours = dayoffGetPendingHours(
+    $currentUserId,
+    $IBLOCK_DAYOFF_REQUESTS,
+    $PROP_EMPLOYEE,
+    $PROP_STATUS,
+    [$STATUS_CANCELLED_ID, $STATUS_COMPLETED_ID]
+);
+
+$availableHours = max(0.0, $balanceHoursRaw - $pendingHours);
+$availableDays = (int)floor($availableHours / 8);
+
+$errors = [];
+$form = [
+    'date_dayoff' => '',
+    'comments' => '',
+];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'create') {
+    $form['date_dayoff'] = trim((string)($_POST['date_dayoff'] ?? ''));
+    $form['comments'] = trim((string)($_POST['comments'] ?? ''));
+
+    if (!check_bitrix_sessid()) {
+        $errors[] = 'Сессия истекла. Обновите страницу.';
+    }
+
+    if ($availableDays < 1) {
+        $errors[] = 'Недостаточно доступных часов для оформления отгула. Доступно дней: 0.';
+    }
+
+    if ($form['date_dayoff'] === '') {
+        $errors[] = 'Укажите дату отгула.';
+    }
+
+    if (!$errors) {
+        $el = new CIBlockElement();
+
+        $fields = [
+            'IBLOCK_ID' => $IBLOCK_DAYOFF_REQUESTS,
+            'IBLOCK_SECTION_ID' => false,
+            'NAME' => 'Заявка на отгул от ' . date('d.m.Y H:i:s'),
+            'ACTIVE' => 'Y',
+            'PROPERTY_VALUES' => [
+                $PROP_EMPLOYEE => $currentUserId,
+                $PROP_DAYOFF_DATE => $form['date_dayoff'],
+                $PROP_COMMENTS => $form['comments'],
+            ],
+        ];
+
+        $elementId = (int)$el->Add($fields);
+
+        if ($elementId <= 0) {
+            $errors[] = 'Не удалось создать заявку: ' . $el->LAST_ERROR;
+        } else {
+            $startErrors = [];
+            $wfId = CBPDocument::StartWorkflow(
+                $BP_TEMPLATE_ID,
+                ['lists', 'BizprocDocument', 'iblock_' . $IBLOCK_DAYOFF_REQUESTS, $elementId],
+                [],
+                $startErrors
+            );
+
+            if (!$wfId) {
+                $errors[] = 'Заявка создана, но не удалось запустить бизнес-процесс: ' . implode('; ', $startErrors);
+            }
+        }
+
+        if (!$errors) {
+            LocalRedirect('/forms/hr_administration/dayoff/list.php');
+        }
     }
 }
+?>
 
-$formData = overtimeBuildDefaultFormData($currentUserId);
+<style>
+.dayoff-wrapper { max-width: 860px; }
+.dayoff-balance { margin: 0 0 18px; padding: 14px 16px; border: 1px solid #dfe3e8; border-radius: 8px; background: #f8fbff; }
+.dayoff-balance__item { margin: 2px 0; }
+.dayoff-form .ui-ctl { max-width: 420px; width: 100%; }
+.dayoff-user-box { padding: 10px 12px; border: 1px solid #dfe3e8; border-radius: 6px; background: #fff; max-width: 420px; }
+</style>
 
-if ($request->isPost()) {
-    $formData = overtimeMergePostedFormData($formData, $_POST);
-}
+<div class="dayoff-wrapper">
+    <div class="dayoff-balance">
+        <div class="dayoff-balance__item"><strong>Доступно часов отгула:</strong> <?= h($availableHours) ?></div>
+        <div class="dayoff-balance__item"><strong>Уже в заявках (на согласовании):</strong> <?= h($pendingHours) ?></div>
+        <div class="dayoff-balance__item"><strong>Доступно дней отгула (по 8 часов):</strong> <?= h($availableDays) ?></div>
+    </div>
 
-require __DIR__ . '/inc/ui_form.php';
-require __DIR__ . '/inc/js.php';
+    <?php if ($errors): ?>
+        <div class="ui-alert ui-alert-danger">
+            <?php foreach ($errors as $error): ?>
+                <div><?= h($error) ?></div>
+            <?php endforeach; ?>
+        </div>
+    <?php endif; ?>
 
-require($_SERVER['DOCUMENT_ROOT'] . '/bitrix/footer.php');
+    <form method="post" class="dayoff-form">
+        <?= bitrix_sessid_post() ?>
+        <input type="hidden" name="action" value="create">
+
+        <div class="ui-form-row">
+            <div class="ui-form-label"><span class="ui-ctl-label-text">Сотрудник</span></div>
+            <div class="ui-form-content">
+                <div class="dayoff-user-box">
+                    <?= h($currentUser['full_name']) ?><?= $currentUser['position'] !== '' ? ' — ' . h($currentUser['position']) : '' ?>
+                </div>
+            </div>
+        </div>
+
+        <div class="ui-form-row">
+            <div class="ui-form-label"><span class="ui-ctl-label-text">Дата отгула</span></div>
+            <div class="ui-form-content">
+                <div class="ui-ctl ui-ctl-textbox">
+                    <input type="date" class="ui-ctl-element" name="date_dayoff" value="<?= h($form['date_dayoff']) ?>" required>
+                </div>
+            </div>
+        </div>
+
+        <div class="ui-form-row">
+            <div class="ui-form-label"><span class="ui-ctl-label-text">Комментарий</span></div>
+            <div class="ui-form-content">
+                <div class="ui-ctl ui-ctl-textarea">
+                    <textarea class="ui-ctl-element" name="comments" rows="4" placeholder="Необязательно"><?= h($form['comments']) ?></textarea>
+                </div>
+            </div>
+        </div>
+
+        <div class="ui-form-row">
+            <div class="ui-form-content">
+                <button type="submit" class="ui-btn ui-btn-success">Создать заявку</button>
+                <a href="/forms/hr_administration/dayoff/list.php" class="ui-btn ui-btn-light-border">Назад к списку</a>
+            </div>
+        </div>
+    </form>
+</div>
+
+<?php require $_SERVER['DOCUMENT_ROOT'] . '/bitrix/footer.php';
