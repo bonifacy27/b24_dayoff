@@ -280,14 +280,7 @@ function getPendingRequestedHours($userId, $iblockId, $statusPropId, $hoursPropI
         }
 
         $hoursRaw = propValueSafe($p, (int)$iblockId, (int)$f['ID'], (int)$hoursPropId, 'CHASY');
-        $hours = parseHoursValue($hoursRaw);
-
-        // Если часы не заполнены в заявке, считаем стандартный отгул как 8 часов.
-        if ($hours <= 0) {
-            $hours = 8.0;
-        }
-
-        $sumHours += $hours;
+        $sumHours += parseHoursValue($hoursRaw);
     }
 
     return $sumHours;
