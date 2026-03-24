@@ -155,15 +155,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
             $errors[] = 'Не удалось создать заявку: ' . $el->LAST_ERROR;
         } else {
             $startErrors = [];
+
+            // Для шаблонов БП списков чаще всего достаточно передавать только ID элемента.
             $wfId = CBPDocument::StartWorkflow(
                 $BP_TEMPLATE_ID,
-                ['lists', 'BizprocDocument', 'iblock_' . $IBLOCK_DAYOFF_REQUESTS, $elementId],
+                $elementId,
                 [],
                 $startErrors
             );
 
+            // Fallback на полный documentId для совместимости с разными настройками окружения.
             if (!$wfId) {
-                $errors[] = 'Заявка создана, но не удалось запустить бизнес-процесс: ' . implode('; ', $startErrors);
+                $fallbackErrors = [];
+                $wfId = CBPDocument::StartWorkflow(
+                    $BP_TEMPLATE_ID,
+                    ['lists', 'BizprocDocument', 'iblock_' . $IBLOCK_DAYOFF_REQUESTS, $elementId],
+                    [],
+                    $fallbackErrors
+                );
+
+                if ($wfId) {
+                    $startErrors = [];
+                } elseif (!empty($fallbackErrors)) {
+                    $startErrors = array_merge($startErrors, $fallbackErrors);
+                }
+            }
+
+            if (!$wfId) {
+                $errors[] = 'Заявка создана, но не удалось запустить бизнес-процесс: ' . implode('; ', array_unique(array_filter($startErrors)));
             }
         }
 
